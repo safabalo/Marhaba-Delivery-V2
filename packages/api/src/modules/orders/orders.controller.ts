@@ -31,6 +31,7 @@ import { zodBody } from '../../common/pipes/zod-validation.pipe';
 import type { AuthenticatedUser } from '../../common/guards/jwt-auth.guard';
 import { AssignmentService } from './assignment.service';
 import { OrdersService } from './orders.service';
+import { TrackingService } from './tracking.service';
 
 @Controller('orders')
 @UseGuards(RolesGuard)
@@ -38,6 +39,7 @@ export class OrdersController {
   constructor(
     private readonly orders: OrdersService,
     private readonly assignment: AssignmentService,
+    private readonly tracking: TrackingService,
   ) {}
 
   @Post()
@@ -67,6 +69,19 @@ export class OrdersController {
   @Get(':id/timeline')
   timeline(@Param('id') id: string) {
     return this.orders.timeline(id);
+  }
+
+  /** Live tracking snapshot (driver position, ETA, waypoints, route). */
+  @Get(':id/tracking')
+  trackOrder(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.tracking.getTracking(id, user);
+  }
+
+  /** PostGIS breadcrumb history for route replay (staff only). */
+  @Get(':id/location-history')
+  @Roles(UserRole.DISPATCHER, UserRole.MANAGER, UserRole.ADMIN)
+  locationHistory(@Param('id') id: string) {
+    return this.tracking.getLocationHistory(id);
   }
 
   @Post(':id/place')

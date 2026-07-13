@@ -37,6 +37,44 @@ export class EtaService {
     return seconds;
   }
 
+  /**
+   * Full driving route (duration + polyline) for map display. Cached in Redis;
+   * returns a null geometry (and a fallback duration) when Mapbox is not
+   * configured or the request fails, so the client can draw a straight line.
+   */
+  async route(
+    from: GeoPoint,
+    to: GeoPoint,
+  ): Promise<{ seconds: number; geometry: [number, number][] | null }> {
+    if (!this.token) return { seconds: this.fallbackEstimate(from, to), geometry: null };
+
+    const key = redisKeys.etaCache(`route:${this.coordKey(from)}`, this.coordKey(to));
+    const cached = await this.redis.get<{ seconds: number; geometry: [number, number][] | null }>(
+      key,
+    );
+    if (cached) return cached;
+
+    try {
+      const coords = `${from.lng},${from.lat};${to.lng},${to.lat}`;
+      const url =
+        `https://api.mapbox.com/directions/v5/mapbox/driving/${coords}` +
+        `?overview=full&geometries=geojson&access_token=${this.token}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Mapbox ${res.status}`);
+      const json = (await res.json()) as {
+        routes?: Array<{ duration: number; geometry: { coordinates: [number, number][] } }>;
+      };
+      const r = json.routes?.[0];
+      if (!r) throw new Error('No route in response');
+      const out = { seconds: Math.round(r.duration), geometry: r.geometry.coordinates };
+      await this.redis.set(key, out, this.cacheTtl);
+      return out;
+    } catch (err) {
+      this.logger.warn(`Mapbox route failed, using fallback: ${(err as Error).message}`);
+      return { seconds: this.fallbackEstimate(from, to), geometry: null };
+    }
+  }
+
   private async fetchFromMapbox(from: GeoPoint, to: GeoPoint): Promise<number> {
     const coords = `${from.lng},${from.lat};${to.lng},${to.lat}`;
     const url =

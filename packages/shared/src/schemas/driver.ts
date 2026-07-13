@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { OrderStatus } from '../enums.js';
+import { geoPointSchema, lngLatSchema } from './common.js';
 
 /**
  * A single driver location ping. Sent over WebSocket (throttled client-side)
@@ -53,6 +54,32 @@ export const driverPerformanceSchema = z.object({
   ratingAvg: z.number().min(0).max(5).nullable(),
 });
 export type DriverPerformance = z.infer<typeof driverPerformanceSchema>;
+
+/**
+ * Live tracking snapshot for a single order: current driver position (from the
+ * Redis hot cache), routing ETA, the pickup/dropoff waypoints, and an optional
+ * route polyline for map display.
+ */
+export const orderTrackingSchema = z.object({
+  orderId: z.string(),
+  status: z.nativeEnum(OrderStatus),
+  etaSeconds: z.number().int().nullable(),
+  pickup: geoPointSchema,
+  dropoff: geoPointSchema,
+  driver: driverLocationSchema.nullable(),
+  routeGeometry: z.array(lngLatSchema).nullable(),
+});
+export type OrderTracking = z.infer<typeof orderTrackingSchema>;
+
+/** A single historical breadcrumb for order route replay. */
+export const locationHistoryPointSchema = z.object({
+  lng: z.number(),
+  lat: z.number(),
+  headingDeg: z.number().nullable(),
+  speedMps: z.number().nullable(),
+  recordedAt: z.coerce.date(),
+});
+export type LocationHistoryPoint = z.infer<typeof locationHistoryPointSchema>;
 
 /** One row on the dispatcher live board. */
 export const dispatchBoardOrderSchema = z.object({
