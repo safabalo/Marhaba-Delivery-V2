@@ -10,7 +10,8 @@ describe('formatMoney', () => {
 
 describe('cn', () => {
   it('merges and dedupes tailwind classes', () => {
+    const hidden = false;
     expect(cn('px-2', 'px-4')).toBe('px-4');
-    expect(cn('text-sm', false && 'hidden', 'font-bold')).toBe('text-sm font-bold');
+    expect(cn('text-sm', hidden && 'hidden', 'font-bold')).toBe('text-sm font-bold');
   });
 });
