@@ -96,7 +96,8 @@ jobs:
         run: |
           pnpm --filter @marhaba/api prisma:generate
           pnpm --filter @marhaba/api exec prisma db push --skip-generate
-          psql "$DATABASE_URL" -f packages/api/prisma/postgis.sql
+          # Strip the Prisma-only "?schema=public" query param; libpq/psql rejects it.
+          psql "${DATABASE_URL%%\?*}" -f packages/api/prisma/postgis.sql
           pnpm --filter @marhaba/api prisma:seed
 
       - name: API e2e tests
