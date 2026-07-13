@@ -40,8 +40,10 @@ import { ZonesModule } from './modules/zones/zones.module';
       pinoHttp: {
         level: process.env.LOG_LEVEL ?? 'info',
         redact: ['req.headers.authorization', 'req.headers.cookie'],
+        // Pretty logs only in local development (opt-in dep). Test/CI/prod use
+        // plain JSON so no pino-pretty transport worker is required.
         transport:
-          process.env.NODE_ENV !== 'production' ? { target: 'pino-pretty' } : undefined,
+          process.env.NODE_ENV === 'development' ? { target: 'pino-pretty' } : undefined,
       },
     }),
     ScheduleModule.forRoot(),
