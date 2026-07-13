@@ -1,0 +1,535 @@
+// Marhaba Delivery v2 — Prisma schema
+// PostgreSQL + PostGIS. Geo columns use Unsupported() and are managed via SQL
+// migrations (see prisma/migrations); geo queries run through raw SQL in the
+// GeoService. Enums here MUST stay in sync with packages/shared/src/enums.ts.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [postgis]
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  CLIENT
+  DRIVER
+  DISPATCHER
+  MANAGER
+  ADMIN
+}
+
+enum OrderStatus {
+  DRAFT
+  SCHEDULED
+  PLACED
+  ACCEPTED
+  ASSIGNED
+  EN_ROUTE_TO_PICKUP
+  PICKED_UP
+  OUT_FOR_DELIVERY
+  DELIVERED
+  FAILED
+  RETRY_SCHEDULED
+  RETURNED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  CARD
+  CASH_ON_DELIVERY
+}
+
+enum PaymentStatus {
+  PENDING
+  REQUIRES_ACTION
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+  CANCELLED
+}
+
+enum AssignmentMode {
+  MANUAL
+  AUTO_NEAREST
+}
+
+enum DriverStatus {
+  OFFLINE
+  AVAILABLE
+  BUSY
+  ON_BREAK
+}
+
+enum VehicleType {
+  CAR
+  MOTORCYCLE
+  BICYCLE
+  SCOOTER
+  VAN
+}
+
+enum DeliveryFailureReason {
+  CUSTOMER_UNAVAILABLE
+  WRONG_ADDRESS
+  CUSTOMER_REFUSED
+  DAMAGED
+  RESTAURANT_CLOSED
+  ACCESS_BLOCKED
+  WEATHER
+  OTHER
+}
+
+enum ProofOfDeliveryType {
+  PHOTO
+  OTP_CODE
+  SIGNATURE
+}
+
+enum NotificationChannel {
+  PUSH
+  SMS
+  EMAIL
+  IN_APP
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+  READ
+}
+
+enum OrderEventType {
+  CREATED
+  STATUS_CHANGED
+  SCHEDULED
+  PAYMENT_INITIATED
+  PAYMENT_SUCCEEDED
+  PAYMENT_FAILED
+  REFUNDED
+  ASSIGNED
+  REASSIGNED
+  UNASSIGNED
+  DRIVER_ACCEPTED
+  DRIVER_ARRIVED_PICKUP
+  PICKED_UP
+  OUT_FOR_DELIVERY
+  DELIVERY_ATTEMPTED
+  DELIVERY_FAILED
+  DELIVERED
+  RETURNED
+  CANCELLED
+  DISPATCHER_INTERVENED
+  NOTE
+}
+
+enum ActorType {
+  SYSTEM
+  CLIENT
+  DRIVER
+  DISPATCHER
+  MANAGER
+  ADMIN
+  WEBHOOK
+}
+
+// ---------------------------------------------------------------------------
+// Identity & people
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  phone        String?
+  role         UserRole @default(CLIENT)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  driverProfile DriverProfile?
+  addresses     SavedAddress[]
+  orders        Order[]         @relation("ClientOrders")
+  refreshTokens RefreshToken[]
+  pushTokens    PushToken[]
+  notifications Notification[]
+
+  @@index([role])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model SavedAddress {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label      String?
+  line1      String
+  line2      String?
+  city       String
+  region     String?
+  postalCode String?
+  country    String   @default("AE")
+  lng        Float
+  lat        Float
+  notes      String?
+  isDefault  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@map("saved_addresses")
+}
+
+model DriverProfile {
+  id            String       @id @default(cuid())
+  userId        String       @unique
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status        DriverStatus @default(OFFLINE)
+  vehicleType   VehicleType  @default(MOTORCYCLE)
+  vehiclePlate  String?
+  ratingAvg     Float?
+  ratingCount   Int          @default(0)
+  activeOrderId String?
+  // Hot last-known location (also mirrored in Redis). History lives in
+  // DriverLocationHistory with a PostGIS geography column.
+  lastLng       Float?
+  lastLat       Float?
+  lastSeenAt    DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  orders          Order[]                 @relation("DriverOrders")
+  locationHistory DriverLocationHistory[]
+
+  @@index([status])
+  @@map("driver_profiles")
+}
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+model Category {
+  id          String    @id @default(cuid())
+  name        String
+  slug        String    @unique
+  description String?
+  imageUrl    String?
+  sortOrder   Int       @default(0)
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  products    Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id              String      @id @default(cuid())
+  categoryId      String
+  category        Category    @relation(fields: [categoryId], references: [id])
+  name            String
+  slug            String      @unique
+  description     String?
+  priceMinor      Int
+  currency        String      @default("AED")
+  imageUrl        String?
+  isAvailable     Boolean     @default(true)
+  prepTimeMinutes Int?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  orderItems      OrderItem[]
+
+  @@index([categoryId])
+  @@map("products")
+}
+
+// ---------------------------------------------------------------------------
+// Delivery zones & pricing (PostGIS)
+// ---------------------------------------------------------------------------
+
+model DeliveryZone {
+  id        String   @id @default(cuid())
+  name      String
+  isActive  Boolean  @default(true)
+  priority  Int      @default(0)
+  // GeoJSON snapshot for the API/dashboard; authoritative geometry is the
+  // PostGIS `area` column (geography(Polygon,4326)) added via SQL migration.
+  geojson   Json
+  area      Unsupported("geography(Polygon, 4326)")?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pricingRules PricingRule[]
+  orders       Order[]
+
+  @@index([isActive])
+  @@map("delivery_zones")
+}
+
+model PricingRule {
+  id                         String       @id @default(cuid())
+  zoneId                     String
+  zone                       DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  baseFeeMinor               Int
+  perKmMinor                 Int
+  minOrderMinor              Int          @default(0)
+  freeDeliveryThresholdMinor Int?
+  // Array of SurgeWindow objects (see shared/schemas/pricing.ts).
+  surgeWindows               Json         @default("[]")
+  isActive                   Boolean      @default(true)
+  createdAt                  DateTime     @default(now())
+  updatedAt                  DateTime     @updatedAt
+
+  @@index([zoneId])
+  @@map("pricing_rules")
+}
+
+// ---------------------------------------------------------------------------
+// Orders
+// ---------------------------------------------------------------------------
+
+model Order {
+  id             String          @id @default(cuid())
+  reference      String          @unique
+  clientId       String
+  client         User            @relation("ClientOrders", fields: [clientId], references: [id])
+  driverId       String?
+  driver         DriverProfile?  @relation("DriverOrders", fields: [driverId], references: [id])
+  zoneId         String?
+  zone           DeliveryZone?   @relation(fields: [zoneId], references: [id])
+  status         OrderStatus     @default(DRAFT)
+  paymentMethod  PaymentMethod
+  assignmentMode AssignmentMode?
+
+  // Frozen address snapshots.
+  pickupAddress  Json
+  dropoffAddress Json
+  dropoffLng     Float
+  dropoffLat     Float
+
+  // Frozen pricing snapshot (see shared PricingSnapshot).
+  pricing     Json
+  currency    String @default("AED")
+  subtotalMinor Int
+  totalMinor  Int
+
+  scheduledFor DateTime?
+  etaSeconds   Int?
+  notes        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items            OrderItem[]
+  events           OrderEvent[]
+  payment          Payment?
+  deliveryAttempts DeliveryAttempt[]
+  proofOfDelivery  ProofOfDelivery?
+
+  @@index([clientId])
+  @@index([driverId])
+  @@index([status])
+  @@index([scheduledFor])
+  @@map("orders")
+}
+
+model OrderItem {
+  id             String  @id @default(cuid())
+  orderId        String
+  order          Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId      String
+  product        Product @relation(fields: [productId], references: [id])
+  nameSnapshot   String
+  unitPriceMinor Int
+  quantity       Int
+  lineTotalMinor Int
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+/// Append-only audit log. Never updated or deleted.
+model OrderEvent {
+  id         String         @id @default(cuid())
+  orderId    String
+  order      Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  type       OrderEventType
+  fromStatus OrderStatus?
+  toStatus   OrderStatus?
+  actorType  ActorType      @default(SYSTEM)
+  actorId    String?
+  metadata   Json?
+  createdAt  DateTime       @default(now())
+
+  @@index([orderId, createdAt])
+  @@index([type])
+  @@map("order_events")
+}
+
+// ---------------------------------------------------------------------------
+// Payments
+// ---------------------------------------------------------------------------
+
+model Payment {
+  id                    String        @id @default(cuid())
+  orderId               String        @unique
+  order                 Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  method                PaymentMethod
+  status                PaymentStatus @default(PENDING)
+  amountMinor           Int
+  currency              String        @default("AED")
+  stripePaymentIntentId String?       @unique
+  stripeChargeId        String?
+  refundedMinor         Int           @default(0)
+  collectedMinor        Int? // cash-on-delivery
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  @@map("payments")
+}
+
+/// Deduplicated Stripe webhook events (also gates payment idempotency).
+model ProcessedWebhookEvent {
+  id          String   @id // Stripe event id
+  type        String
+  processedAt DateTime @default(now())
+
+  @@map("processed_webhook_events")
+}
+
+// ---------------------------------------------------------------------------
+// Delivery execution
+// ---------------------------------------------------------------------------
+
+model DeliveryAttempt {
+  id            String                 @id @default(cuid())
+  orderId       String
+  order         Order                  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  attemptNumber Int
+  succeeded     Boolean                @default(false)
+  failureReason DeliveryFailureReason?
+  notes         String?
+  lng           Float?
+  lat           Float?
+  createdAt     DateTime               @default(now())
+
+  @@index([orderId])
+  @@map("delivery_attempts")
+}
+
+model ProofOfDelivery {
+  id           String              @id @default(cuid())
+  orderId      String              @unique
+  order        Order               @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  type         ProofOfDeliveryType
+  photoUrl     String?
+  signatureUrl String?
+  otpVerified  Boolean?
+  lng          Float
+  lat          Float
+  capturedAt   DateTime
+  createdAt    DateTime            @default(now())
+
+  @@map("proof_of_delivery")
+}
+
+model DriverLocationHistory {
+  id         String        @id @default(cuid())
+  driverId   String
+  driver     DriverProfile @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  orderId    String?
+  lng        Float
+  lat        Float
+  // PostGIS point added via SQL migration for spatial history queries.
+  geom       Unsupported("geography(Point, 4326)")?
+  headingDeg Float?
+  speedMps   Float?
+  recordedAt DateTime
+
+  @@index([driverId, recordedAt])
+  @@index([orderId])
+  @@map("driver_location_history")
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+model PushToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  platform  String
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("push_tokens")
+}
+
+model Notification {
+  id        String              @id @default(cuid())
+  userId    String
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel   NotificationChannel
+  status    NotificationStatus  @default(QUEUED)
+  title     String
+  body      String
+  data      Json?
+  orderId   String?
+  createdAt DateTime            @default(now())
+  readAt    DateTime?
+
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+// ---------------------------------------------------------------------------
+// Idempotency
+// ---------------------------------------------------------------------------
+
+/// Backs the Idempotency-Key interceptor. The response is cached so retries
+/// with the same key return the original result. Redis holds a short-lived
+/// lock; this table is the durable record.
+model IdempotencyKey {
+  id           String   @id @default(cuid())
+  key          String
+  userId       String?
+  method       String
+  path         String
+  requestHash  String
+  statusCode   Int?
+  responseBody Json?
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+
+  @@unique([key, method, path])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+}
