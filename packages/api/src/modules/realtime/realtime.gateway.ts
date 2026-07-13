@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Logger, type OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import {
@@ -37,11 +37,20 @@ import { RealtimeService } from './realtime.service';
   cors: { origin: true, credentials: true },
   transports: ['websocket'],
 })
-export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
+export class RealtimeGateway
+  implements OnGatewayInit, OnGatewayConnection, OnApplicationShutdown
+{
   private readonly logger = new Logger(RealtimeGateway.name);
 
   @WebSocketServer()
   server!: Server;
+
+  // Dedicated adapter connections (duplicated from the shared clients) so the
+  // adapter's pub/sub lifecycle is independent of RedisService — otherwise the
+  // shared clients get quit before the adapter's close() runs its punsubscribe,
+  // which raises an unhandled "Connection is closed" error on shutdown.
+  private adapterPub?: Redis;
+  private adapterSub?: Redis;
 
   constructor(
     private readonly jwt: JwtService,
@@ -53,9 +62,17 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
   ) {}
 
   afterInit(server: Server): void {
-    server.adapter(createAdapter(this.pub, this.sub));
+    this.adapterPub = this.pub.duplicate();
+    this.adapterSub = this.sub.duplicate();
+    server.adapter(createAdapter(this.adapterPub, this.adapterSub));
     this.realtime.registerServer(server);
     this.logger.log('Realtime gateway initialised with Redis adapter');
+  }
+
+  // Runs after the WS server (and its adapter) have been closed, so quitting
+  // these connections here can't race the adapter's own shutdown.
+  async onApplicationShutdown(): Promise<void> {
+    await Promise.allSettled([this.adapterPub?.quit(), this.adapterSub?.quit()]);
   }
 
   async handleConnection(client: Socket): Promise<void> {
