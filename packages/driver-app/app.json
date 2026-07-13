@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "Marhaba Driver",
+    "slug": "marhaba-driver",
+    "version": "2.0.0",
+    "orientation": "portrait",
+    "scheme": "marhabadriver",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "infoPlist": {
+        "UIBackgroundModes": ["location", "fetch"],
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Marhaba Driver uses your location to share live delivery tracking with customers and dispatch.",
+        "NSLocationWhenInUseUsageDescription": "Marhaba Driver uses your location while on an active delivery.",
+        "NSCameraUsageDescription": "Marhaba Driver uses the camera to capture proof of delivery."
+      }
+    },
+    "android": {
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "CAMERA",
+        "FOREGROUND_SERVICE"
+      ]
+    },
+    "plugins": [
+      "expo-location",
+      "expo-camera",
+      "expo-secure-store",
+      ["expo-task-manager", {}]
+    ]
+  }
+}
