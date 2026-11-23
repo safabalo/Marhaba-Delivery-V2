@@ -5,11 +5,13 @@ import {
 } from '@marhaba/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
-import Map, { Marker } from 'react-map-gl';
+import Map, { Layer, Marker, Source } from 'react-map-gl';
 import { Button } from '../components/ui/button';
 import { Card, CardBody, CardHeader, StatusBadge } from '../components/ui/card';
+import { useOrderTracking } from '../hooks/useOrderTracking';
 import { api } from '../lib/api';
 import { getSocket, joinDispatch } from '../lib/socket';
+import { formatEta } from '../lib/utils';
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
 
@@ -30,7 +32,10 @@ export function DispatchPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['dispatch-board'] }),
   });
 
-  // Live board + driver-location updates over WebSocket.
+  // Live tracking for the selected order (driver position, ETA, route).
+  const live = useOrderTracking(selected);
+
+  // Board + global driver-location updates over WebSocket.
   useEffect(() => {
     const socket = getSocket();
     joinDispatch();
@@ -46,6 +51,7 @@ export function DispatchPage() {
   }, [qc]);
 
   const orders = board.data ?? [];
+  const selectedOrder = orders.find((o) => o.orderId === selected) ?? null;
   const center = useMemo(() => {
     const first = orders[0];
     return { longitude: first?.dropoffLng ?? 55.27, latitude: first?.dropoffLat ?? 25.2 };
@@ -73,7 +79,7 @@ export function DispatchPage() {
               </div>
               <div className="mt-1 flex items-center justify-between text-xs text-neutral-500">
                 <span>{o.driverName ?? 'Unassigned'}</span>
-                <span>{Math.round(o.ageSeconds / 60)}m old</span>
+                <span>ETA {formatEta(o.etaSeconds)} · {Math.round(o.ageSeconds / 60)}m old</span>
               </div>
               {!o.driverId && (
                 <Button
@@ -93,7 +99,33 @@ export function DispatchPage() {
         </CardBody>
       </Card>
 
-      <Card className="overflow-hidden">
+      <Card className="relative overflow-hidden">
+        {/* Tracking overlay for the selected order. */}
+        {selectedOrder && (
+          <div className="absolute right-4 top-4 z-10 w-56 rounded-lg bg-white/95 p-3 shadow-lg backdrop-blur">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold">{selectedOrder.reference}</span>
+              <StatusBadge status={live.status ?? selectedOrder.status} />
+            </div>
+            <dl className="mt-2 space-y-1 text-xs text-neutral-600">
+              <div className="flex justify-between">
+                <dt>ETA</dt>
+                <dd className="font-medium text-neutral-900">{formatEta(live.etaSeconds)}</dd>
+              </div>
+              <div className="flex justify-between">
+                <dt>Driver</dt>
+                <dd>{live.driver ? 'live' : selectedOrder.driverName ?? 'unassigned'}</dd>
+              </div>
+            </dl>
+            <button
+              onClick={() => setSelected(null)}
+              className="mt-2 text-xs text-brand hover:underline"
+            >
+              Close
+            </button>
+          </div>
+        )}
+
         {MAPBOX_TOKEN ? (
           <Map
             mapboxAccessToken={MAPBOX_TOKEN}
@@ -101,16 +133,62 @@ export function DispatchPage() {
             style={{ width: '100%', height: '80vh' }}
             mapStyle="mapbox://styles/mapbox/streets-v12"
           >
+            {/* All active dropoffs. */}
             {orders.map((o) => (
               <Marker key={o.orderId} longitude={o.dropoffLng} latitude={o.dropoffLat}>
-                <div className="h-3 w-3 rounded-full border-2 border-white bg-brand shadow" />
+                <button
+                  onClick={() => setSelected(o.orderId)}
+                  className={`h-3 w-3 rounded-full border-2 border-white shadow ${
+                    selected === o.orderId ? 'bg-brand ring-2 ring-brand/40' : 'bg-neutral-500'
+                  }`}
+                />
               </Marker>
             ))}
+
+            {/* Global live driver pins. */}
             {Object.values(driverPins).map((d) => (
               <Marker key={d.driverId} longitude={d.lng} latitude={d.lat}>
                 <div className="h-3 w-3 rounded-full border-2 border-white bg-amber-500 shadow" />
               </Marker>
             ))}
+
+            {/* Selected order: route line + pickup/dropoff + live driver. */}
+            {live.tracking?.routeGeometry && (
+              <Source
+                id="selected-route"
+                type="geojson"
+                data={{
+                  type: 'Feature',
+                  properties: {},
+                  geometry: { type: 'LineString', coordinates: live.tracking.routeGeometry },
+                }}
+              >
+                <Layer
+                  id="selected-route-line"
+                  type="line"
+                  paint={{ 'line-color': '#0e7c66', 'line-width': 4, 'line-opacity': 0.75 }}
+                />
+              </Source>
+            )}
+            {live.tracking && (
+              <>
+                <Marker longitude={live.tracking.pickup.lng} latitude={live.tracking.pickup.lat}>
+                  <div className="grid h-5 w-5 place-items-center rounded-full border-2 border-white bg-blue-600 text-[10px] font-bold text-white shadow">
+                    P
+                  </div>
+                </Marker>
+                <Marker longitude={live.tracking.dropoff.lng} latitude={live.tracking.dropoff.lat}>
+                  <div className="grid h-5 w-5 place-items-center rounded-full border-2 border-white bg-green-600 text-[10px] font-bold text-white shadow">
+                    D
+                  </div>
+                </Marker>
+              </>
+            )}
+            {live.driver && (
+              <Marker longitude={live.driver.lng} latitude={live.driver.lat}>
+                <div className="h-4 w-4 rounded-full border-2 border-white bg-amber-500 shadow ring-2 ring-amber-300" />
+              </Marker>
+            )}
           </Map>
         ) : (
           <div className="grid h-[80vh] place-items-center text-sm text-neutral-400">

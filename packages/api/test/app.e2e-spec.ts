@@ -57,4 +57,52 @@ describe('API (e2e)', () => {
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body)).toBe(true);
   });
+
+  async function loginCookies(email: string): Promise<string | string[]> {
+    const res = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email, password: 'Password123' });
+    return res.headers['set-cookie'];
+  }
+
+  it('accepts a driver location ping over HTTP (offline outbox fallback)', async () => {
+    const cookies = await loginCookies('driver@marhaba.delivery');
+    const res = await request(app.getHttpServer())
+      .post('/api/drivers/me/location')
+      .set('Cookie', cookies)
+      .send({ lng: 55.27, lat: 25.2, recordedAt: new Date().toISOString() });
+    expect(res.status).toBe(202);
+  });
+
+  it('creates an order and returns a live tracking snapshot to its owner', async () => {
+    const cookies = await loginCookies('client@marhaba.delivery');
+    const products = await request(app.getHttpServer()).get('/api/products');
+    expect(products.body.length).toBeGreaterThan(0);
+    const productId = products.body[0].id as string;
+
+    const create = await request(app.getHttpServer())
+      .post('/api/orders')
+      .set('Cookie', cookies)
+      .send({
+        items: [{ productId, quantity: 1 }],
+        dropoffAddress: { line1: '12 Marina Walk', city: 'Dubai', country: 'AE', point: { lng: 55.27, lat: 25.2 } },
+        paymentMethod: 'CASH_ON_DELIVERY',
+        placeNow: true,
+      });
+    expect(create.status).toBe(201);
+    const orderId = create.body.id as string;
+
+    const tracking = await request(app.getHttpServer())
+      .get(`/api/orders/${orderId}/tracking`)
+      .set('Cookie', cookies);
+    expect(tracking.status).toBe(200);
+    expect(tracking.body.pickup).toBeDefined();
+    expect(tracking.body.dropoff).toMatchObject({ lng: 55.27, lat: 25.2 });
+    expect(tracking.body.driver).toBeNull(); // not assigned yet
+  });
+
+  it('rejects tracking for anonymous users', async () => {
+    const res = await request(app.getHttpServer()).get('/api/orders/does-not-matter/tracking');
+    expect(res.status).toBe(401);
+  });
 });
